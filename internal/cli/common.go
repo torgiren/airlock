@@ -82,8 +82,11 @@ func verbosityLevel(verbCount int) logrus.Level {
 
 // validateSettings sanity-checks all settings
 func validateSettings(cfg config.Settings) error {
-	if len(cfg.EtcdEndpoints) == 0 {
-		return errors.New("no etcd3 endpoints configured")
+	if len(cfg.EtcdEndpoints) == 0 && !cfg.MemDBEnabled {
+		return errors.New("no etcd3 endpoints configured and MemDB is not enabled")
+	}
+	if len(cfg.EtcdEndpoints) > 0 && cfg.MemDBEnabled {
+		return errors.New("both etcd3 endpoints and MemDB are configured, choose one")
 	}
 	if len(cfg.LockGroups) == 0 {
 		return errors.New("no lock-groups configured")

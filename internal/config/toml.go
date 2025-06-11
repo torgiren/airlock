@@ -11,6 +11,7 @@ type tomlConfig struct {
 	Service *serviceSection `toml:"service"`
 	Status  *statusSection  `toml:"status"`
 	Etcd3   *etcd3Section   `toml:"etcd3"`
+	MemDB   *MemDBSection   `toml:"memdb"`
 	Lock    *lockSection    `toml:"lock"`
 }
 
@@ -35,6 +36,11 @@ type etcd3Section struct {
 	TxnTimeoutMs      *uint64  `toml:"transaction_timeout_ms"`
 	ClientCertPubPath string   `toml:"client_cert_pub_path"`
 	ClientCertKeyPath string   `toml:"client_cert_key_path"`
+}
+
+// MemDBSection holds the optional `memdb` fragment
+type MemDBSection struct {
+	Enabled *bool `toml:"enabled"`
 }
 
 // lockSection holds the optional `lock` fragment
@@ -76,6 +82,9 @@ func mergeToml(settings *Settings, cfg tomlConfig) {
 	}
 	if cfg.Etcd3 != nil {
 		mergeEtcd(settings, *cfg.Etcd3)
+	}
+	if cfg.MemDB != nil {
+		mergeMemDB(settings, *cfg.MemDB)
 	}
 	if cfg.Lock != nil {
 		mergeLock(settings, *cfg.Lock)
@@ -133,6 +142,16 @@ func mergeEtcd(settings *Settings, cfg etcd3Section) {
 	}
 	if len(cfg.ClientCertKeyPath) > 0 {
 		settings.ClientCertKeyPath = cfg.ClientCertKeyPath
+	}
+}
+
+func mergeMemDB(settings *Settings, cfg MemDBSection) {
+	if settings == nil {
+		return
+	}
+
+	if cfg.Enabled != nil {
+		settings.MemDBEnabled = *cfg.Enabled
 	}
 }
 
