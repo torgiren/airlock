@@ -1,0 +1,213 @@
+package lock
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"time"
+
+	transport "go.etcd.io/etcd/client/pkg/v3/transport"
+	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+const (
+	keyTemplate = "com.coreos.airlock/groups/%s/v1/semaphore"
+)
+
+var (
+	// ErrNilEtcdManager is returned on nil manager
+	ErrNilEtcdManager = errors.New("nil EtcdManager")
+)
+
+// EtcdManager takes care of locking for clients
+type EtcdManager struct {
+	client  *clientv3.Client
+	keyPath string
+}
+
+// NewEtcdManager returns a new lock manager, ensuring the underlying semaphore is initialized.
+func NewEtcdManager(ctx context.Context, etcdURLs []string, certPubPath string, certKeyPath string, txnTimeoutMs time.Duration, group string, slots uint64) (*EtcdManager, error) {
+	tlsInfo := transport.TLSInfo{
+		CertFile: certPubPath,
+		KeyFile:  certKeyPath,
+	}
+
+	tlsConfig, err := tlsInfo.ClientConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   etcdURLs,
+		DialTimeout: time.Duration(txnTimeoutMs) * time.Millisecond,
+		TLS:         tlsConfig,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	keyPath := fmt.Sprintf(keyTemplate, url.QueryEscape(group))
+	manager := EtcdManager{client, keyPath}
+
+	if err := manager.ensureInit(ctx, slots); err != nil {
+		return nil, err
+	}
+
+	return &manager, nil
+}
+
+// RecursiveLock adds this lock `id` as a holder of the semaphore
+//
+// It will return an error if there is a problem getting or setting the
+// semaphore, or if the maximum number of holders has been reached.
+func (m *EtcdManager) RecursiveLock(ctx context.Context, id string) (*Semaphore, error) {
+	sem, version, err := m.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	held, err := sem.RecursiveLock(id)
+	if err != nil {
+		return nil, err
+	}
+	if held {
+		return sem, nil
+	}
+
+	if err := m.set(ctx, sem, version); err != nil {
+		return nil, err
+	}
+
+	return sem, nil
+}
+
+// UnlockIfHeld removes this lock `id` as a holder of the semaphore
+//
+// It returns an error if there is a problem getting or setting the semaphore.
+func (m *EtcdManager) UnlockIfHeld(ctx context.Context, id string) (*Semaphore, error) {
+	sem, version, err := m.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := sem.UnlockIfHeld(id); err != nil {
+		return nil, err
+	}
+
+	if err := m.set(ctx, sem, version); err != nil {
+		return nil, err
+	}
+
+	return sem, nil
+}
+
+// FetchSemaphore fetches current semaphore version
+func (m *EtcdManager) FetchSemaphore(ctx context.Context) (*Semaphore, error) {
+	semaphore, _, err := m.get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return semaphore, nil
+}
+
+// Close reaps all running goroutines
+func (m *EtcdManager) Close() {
+	if m == nil {
+		return
+	}
+
+	m.client.Close()
+}
+
+// ensureInit initialize the semaphore in etcd, if it does not exist yet
+func (m *EtcdManager) ensureInit(ctx context.Context, slots uint64) error {
+	if m == nil {
+		return ErrNilEtcdManager
+	}
+
+	sem := NewSemaphore(slots)
+	semValue, err := sem.String()
+	if err != nil {
+		return err
+	}
+
+	_, err = m.client.Txn(ctx).If(
+		// version=0 means that the key does not exist.
+		clientv3.Compare(clientv3.Version(m.keyPath), "=", 0),
+	).Then(
+		clientv3.OpPut(m.keyPath, semValue),
+	).Commit()
+
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// get returns the current semaphore value and version, or an error
+func (m *EtcdManager) get(ctx context.Context) (*Semaphore, int64, error) {
+	resp, err := m.client.Get(ctx, m.keyPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	if resp.Count != 1 {
+		return nil, 0, fmt.Errorf("unexpected number of results: %d", resp.Count)
+	}
+
+	var data []byte
+	var version int64
+	for _, kv := range resp.Kvs {
+		data = kv.Value
+		version = kv.Version
+		break
+	}
+	if version == 0 {
+		return nil, 0, errors.New("key at version 0")
+	}
+	if len(data) == 0 {
+		return nil, 0, errors.New("empty semaphore value")
+	}
+
+	sem := &Semaphore{}
+	err = json.Unmarshal(data, sem)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return sem, version, nil
+}
+
+// set updates the semaphore in etcd, if `version` matches the one previously observed
+func (m *EtcdManager) set(ctx context.Context, sem *Semaphore, version int64) error {
+	if m == nil {
+		return ErrNilEtcdManager
+	}
+	if sem == nil {
+		return ErrNilSemaphore
+	}
+
+	data, err := json.Marshal(sem)
+	if err != nil {
+		return err
+	}
+
+	// Conditionally Put if version in etcd is still the same we observed.
+	// If the condition is not met, the transaction will return as "not succeeding".
+	resp, err := m.client.Txn(ctx).If(
+		clientv3.Compare(clientv3.Version(m.keyPath), "=", version),
+	).Then(
+		clientv3.OpPut(m.keyPath, string(data)),
+	).Commit()
+
+	if err != nil {
+		return err
+	}
+	if !resp.Succeeded {
+		return errors.New("conflict on semaphore detected, aborting")
+	}
+
+	return nil
+}

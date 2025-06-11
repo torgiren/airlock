@@ -21,6 +21,8 @@ type Settings struct {
 	ClientCertKeyPath string
 	EtcdTxnTimeout    time.Duration
 
+	MemDBEnabled bool
+
 	LockGroups map[string]uint64
 }
 
@@ -54,6 +56,8 @@ func defaultSettings() Settings {
 
 		EtcdEndpoints:  []string{},
 		EtcdTxnTimeout: time.Duration(3) * time.Second,
+
+		MemDBEnabled: false,
 
 		LockGroups: make(map[string]uint64),
 	}

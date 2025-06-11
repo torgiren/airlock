@@ -15,6 +15,10 @@ tls = false
 [etcd3]
 endpoints = [ "http://127.0.0.1:2379" ]
 
+# MemoryDB configuration
+[memdb]
+enabled = false
+
 # Lock configuration, base reboot group
 [lock]
 default_group_name = "default"
