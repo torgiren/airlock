@@ -45,6 +45,7 @@ func runServe(cmd *cobra.Command, cmdArgs []string) error {
 
 		statusMux := http.NewServeMux()
 		statusMux.Handle(status.MetricsEndpoint, status.Metrics())
+		statusMux.Handle(status.StatusEndpoint, status.Status(runSettings))
 		statusService := http.Server{
 			Addr:    fmt.Sprintf("%s:%d", runSettings.StatusAddress, runSettings.StatusPort),
 			Handler: statusMux,
